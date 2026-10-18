@@ -1,0 +1,28 @@
+/// <reference types="vitest/config" />
+import { fileURLToPath, URL } from "node:url";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+
+export default defineConfig({
+  resolve: {
+    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+  },
+  plugins: [react(), tailwindcss()],
+  build: { outDir: "dist", emptyOutDir: true },
+  server: {
+    proxy: {
+      // 注意：`/api` 前缀会连带吞掉 /api-keys 等同前缀路径，逐条精确匹配
+      "^/api/": "http://127.0.0.1:8000",
+      "^/v1/": "http://127.0.0.1:8000",
+      "/authorize": "http://127.0.0.1:8000",
+      "/health": "http://127.0.0.1:8000",
+    },
+  },
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test-setup.ts"],
+    coverage: { provider: "v8", reporter: ["text"], include: ["src/**/*.{ts,tsx}"], exclude: ["src/**/*.test.{ts,tsx}", "src/test-setup.ts", "src/test-utils/**", "src/main.tsx"] },
+  },
+});

@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # Python 运行时依赖（uv.lock 由 CI 的 uv sync --frozen 校验）
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python:
+        patterns: ["*"]
+
+  # 前端依赖
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      web:
+        patterns: ["*"]
+
+  # CI 里用 SHA 固定的 action 需要定期跟进新版本
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # 基础镜像（Dockerfile / compose）
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

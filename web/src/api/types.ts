@@ -1,0 +1,884 @@
+/**
+ * 后端 API 契约（并行开发的唯一事实来源）。
+ *
+ * 后端已完成并测试通过（484 测试 / 100% 覆盖），本文件与 src/main.py 的路由一一对应。
+ * 各页面只依赖本文件，不要各自猜测字段名。
+ */
+
+export type Provider =
+  | "codebuddy"
+  | "codebuddy_intl"
+  | "trae"
+  | "zen"
+  | "kilo"
+  | "qoder"
+  | "codearts";
+
+/** 健康度三态：null = 未探测；-1 = 已耗尽；0-100 = 已知剩余百分比。
+ * 展示层把 null 再分成「未探测」（付费渠道探测失败）与「无探测」（zen/kilo
+ * 免费层上游没有额度接口）——调度口径不变，仍按 null 排在 known 之后。 */
+export type Health = number | null;
+
+/** 额度包明细（管理台悬浮展示）：各渠道的积分/权益包。 */
+export interface QuotaPackage {
+  /** 包名：CodeBuddy 为 PackageName；TRAE 为福利积分/每月登录赠送/签到奖励等，可能为空 */
+  name: string;
+  total: number;
+  used: number;
+  /** 到期 epoch；无到期信息为 null */
+  end: number | null;
+}
+
+/** 一条 (凭证, 模型) 级冷却：模型级限流或「该渠道无此模型」负缓存。 */
+export interface ModelCooldown {
+  model: string;
+  /** 冷却截止 epoch */
+  cooling_until: number;
+  /** 连续命中次数（退避升级用） */
+  hits: number;
+  /** "model" = 模型级限流；"blocked" = 该账号无此模型的负缓存 */
+  reason: string;
+}
+
+export interface Credential {
+  id: string;
+  provider: Provider;
+  nickname: string;
+  /** 软开关：1=参与对话选号；0=暂停（只摘对话流量，后台任务照常） */
+  enabled: 0 | 1;
+  /** session 死亡硬禁用 */
+  disabled: 0 | 1;
+  disabled_reason: string | null;
+  /** 手动指定（全局唯一一条为 1） */
+  pinned: 0 | 1;
+  health: Health;
+  cooling_until: number | null;
+  err_count: number;
+  quota_remaining: number | null;
+  quota_total: number | null;
+  /** 第二本账（仅 CodeArts 有）：积分＝内置模型计费单位，与每日 token 池并行。
+   *  其余渠道恒 null。健康度只看 quota_remaining；积分到期日由后端并入
+   *  到期阶梯参与选号排序，前端不据此改健康度。 */
+  quota_credits_remaining: number | null;
+  quota_credits_total: number | null;
+  /** 仅 CodeBuddy 有周期；TRAE 为 null */
+  quota_cycle_end: number | null;
+  /** 调度主窗口（36h）内即将到期的积分（与选号排序第一级同源）；无到期信息的渠道为 null。
+   *  CodeArts 已按账本拆分：此字段是**每日池**那一段，积分账那一段见
+   *  `quota_credits_expiring`。 */
+  quota_expiring_credits: number | null;
+  /** 调度次窗口（7 天）内即将到期的积分（主窗口打平时才参与排序的第二级）；同上 */
+  quota_expiring_credits_secondary: number | null;
+  /** 积分账自己的主窗口内到期积分（仅 CodeArts 有，其余渠道 null） */
+  quota_credits_expiring: number | null;
+  /** 积分账自己的次窗口内到期积分（仅 CodeArts 有） */
+  quota_credits_expiring_secondary: number | null;
+  /** 套餐到期阶梯 [[到期 epoch, 该套餐剩余积分]]，仅 CodeBuddy；TRAE 为 null */
+  quota_expiry_ladder: [number, number][] | null;
+  /** 积分账那一段到期阶梯（仅 CodeArts）；其余渠道 null */
+  quota_credits_expiry_ladder: [number, number][] | null;
+  /** 额度包明细（含包名，仅供展示）；未探测或上游未提供时为 null */
+  quota_packages: QuotaPackage[] | null;
+  /** 生效中的模型级冷却（模型级限流/负缓存）；无则为空数组 */
+  model_cooldowns: ModelCooldown[];
+  quota_probed_at: number | null;
+  /** access token 到期 epoch（秒）；0 = 未知（渠道没给到期信息，也可能是 JWT 不可解析） */
+  token_expires_at: number;
+  /** access token 签发 epoch（秒，JWT iat）；0 = 未知。进度条满量程 = 它到到期时间的间隔 */
+  token_issued_at: number;
+  /** 成长中心最近一轮执行时间（仅 CodeBuddy；老库升级前为 null） */
+  growth_last_run_at: number | null;
+  /** 该轮一行中文汇报 */
+  growth_last_result: string | null;
+  created_at: number;
+  added_by: string | null;
+  /** 凭证级限额护栏；null = 未配置（不受限） */
+  limits: CredentialLimits | null;
+  /** 运维标签（仅列表展示与筛选，不参与调度）；无标签为空数组 */
+  tags: string[];
+}
+
+/** 凭证级限额护栏（全部按北京自然日；0/null = 该护栏关闭）。 */
+export interface CredentialLimits {
+  /** 账户剩余积分 ≤ 该值时停用（给号留底） */
+  keep_credits: number | null;
+  /** 当日 token（输入+输出）上限 */
+  daily_tokens: number | null;
+  /** 当日 credit 上限 */
+  daily_credits: number | null;
+  /** 按模型当日 token 上限：{模型名: 上限} */
+  per_model_tokens: Record<string, number>;
+  updated_at: number;
+  updated_by: string | null;
+}
+
+/** 写入用的限额形态（updated_at / updated_by 由后端填）。 */
+export type CredentialLimitsInput = Omit<CredentialLimits, "updated_at" | "updated_by">;
+
+export interface ApiKey {
+  id: string;
+  username: string;
+  name: string;
+  /** 脱敏预览，形如 sk-…Ab3d */
+  preview: string;
+  created_at: number;
+  last_used_at: number | null;
+  /** 绑定的渠道（见 KNOWN_PROVIDERS 七渠道）；空串 = 自动 */
+  provider_binding: string;
+  /** 来源 IP 白名单（规范化后的 IP/CIDR 逗号分隔）；空串 = 不限制 */
+  allowed_ips: string;
+  /** 模型白名单（fnmatch glob，逗号分隔）；空串 = 不限制 */
+  allowed_models: string;
+  /** 到期时间（epoch 秒）；null = 永不过期 */
+  expires_at: number | null;
+}
+
+/** 创建成功时才有明文（只返回一次） */
+export interface ApiKeyCreated extends ApiKey {
+  api_key: string;
+}
+
+export interface StatsOverview {
+  requests: number;
+  ok_count: number;
+  success_rate: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  /** 输入中命中缓存的 token；任一明细上报过才非 null */
+  cached_tokens: number | null;
+  /** 渠道可选字段，两边都经常为 null */
+  credit: number | null;
+  /** credit 是否为推算值（TRAE 按官方单价、CodeArts 福利模型按每日池 1:1），展示加 ≈ */
+  credit_estimated: boolean;
+  /** 成本估算（USD，OpenRouter 刊例价 × token）；无可定价明细时为 null（显示 —） */
+  cost_usd: number | null;
+  /** 成本估算（CNY，按当时汇率折算）；与 cost_usd 同生同灭 */
+  cost_cny: number | null;
+  /** 平均端到端耗时（排队 + 首字 + 生成），非网络延迟 */
+  avg_latency_ms: number | null;
+  /** 平均首字延迟（TTFB）：请求开始到首个内容帧，接近真实体感延迟 */
+  avg_ttfb_ms: number | null;
+}
+
+/**
+ * 分组统计的公共指标：渠道 / 模型 / 用户 / 凭证四个维度行结构一致，
+ * 只多一个分组键列（见下面四个接口）。
+ */
+export interface GroupStats {
+  requests: number;
+  ok_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  /** 输入中命中缓存的 token；该维度任一明细上报过才非 null */
+  cached_tokens: number | null;
+  credit: number | null;
+  /** credit 是否为推算值（含推算即为 true），展示加 ≈ */
+  credit_estimated: boolean;
+  /** 成本估算（USD）；该维度无可定价明细时为 null */
+  cost_usd: number | null;
+  /** 成本估算（CNY） */
+  cost_cny: number | null;
+  /** 平均耗时（ms）：latency_sum ÷ 成功数，读小时汇总；无成功请求为 null */
+  avg_latency_ms: number | null;
+  /** 平均首字延迟（ms）：ttfb_sum ÷ 成功数，读小时汇总；无成功请求为 null */
+  avg_ttfb_ms: number | null;
+  /** P95 耗时（ms）：按成功请求 nearest-rank 取第 ⌈0.95n⌉ 小，读明细表（仅 90 天） */
+  p95_latency_ms: number | null;
+  /** P95 首字延迟（ms）：同 p95_latency_ms，只数上报过 ttfb 的样本 */
+  p95_ttfb_ms: number | null;
+}
+
+export interface ProviderStats extends GroupStats {
+  provider: Provider;
+}
+
+export interface ModelStats extends GroupStats {
+  model: string;
+}
+
+export interface UserStats extends GroupStats {
+  username: string;
+}
+
+export interface CredentialStats extends GroupStats {
+  credential_id: string;
+  /** 凭证所属渠道（凭证已删除时后端回退为明细里的渠道），用于凭证名前的渠道 icon */
+  provider: Provider;
+  /** 凭证昵称：与请求明细同口径；仅 admin/operator 下发，空昵称/已删除为 null */
+  credential_name: string | null;
+}
+
+/** 图表指标：请求次数 / token 消耗 / 成本 / 平均耗时 / 平均首字延迟。 */
+export type StatsMetric = "requests" | "tokens" | "cost" | "latency" | "ttfb";
+
+/** 小时粒度时间序列点（usage_hourly 聚合，跨 model 汇合）。值语义随 metric 变化。 */
+export interface TimelinePoint {
+  /** UTC 秒，对齐到小时起点 */
+  hour: number;
+  /** 各渠道指标值（渠道名为动态键：codebuddy / trae / zen…） */
+  [provider: string]: number;
+}
+
+/** 按模型趋势：每小时各 Top N 模型的指标值（模型名为动态键）。 */
+export interface ModelTimelinePoint {
+  hour: number;
+  [model: string]: number;
+}
+
+export interface ModelTimelineResponse {
+  models: string[];
+  points: ModelTimelinePoint[];
+}
+
+/** 逐请求明细（usage_events，仅保留 90 天）。 */
+export interface UsageEventRow {
+  rowid: number;
+  ts: number;
+  username: string;
+  provider: string;
+  model: string;
+  /** 本次请求命中的凭证 ID（预热失败等无凭证场景为 null） */
+  credential_id: string | null;
+  /** 凭证昵称（凭证已删除时为 null，回退展示 credential_id 前缀） */
+  credential_name: string | null;
+  ok: number;
+  error_type: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  credit: number | null;
+  /** credit 是否为推算值（TRAE 按官方单价、CodeArts 福利模型按每日池 1:1），展示加 ≈ */
+  credit_estimated: number;
+  /** 成本估算（USD，OpenRouter 刊例价）；未匹配到定价或未上报 token 时为 null */
+  cost_usd: number | null;
+  /** 成本估算（CNY，按写入时汇率折算）；与 cost_usd 同生同灭 */
+  cost_cny: number | null;
+  /** 端到端耗时（排队 + 首字 + 生成），非网络延迟 */
+  latency_ms: number | null;
+  /** 首字延迟（TTFB）：请求开始到首个内容帧；无帧（如预热失败）时为 null */
+  ttfb_ms: number | null;
+  /** 请求 ID（与响应头 X-Request-ID 同值）；老库历史行为 null */
+  request_id: string | null;
+}
+
+export interface StatsEventsResponse {
+  events: UsageEventRow[];
+  /** 下一页游标：本页最小 rowid；null 表示到底（或走了 offset 分页模式） */
+  next_before: number | null;
+  /** offset 分页模式下的总条数；游标模式（默认时间降序）为 null */
+  total: number | null;
+}
+
+/** 明细钻取过滤：分组表点行时带上，三者独立可叠加（AND）。 */
+export interface StatsEventFilters {
+  provider?: string;
+  model?: string;
+  credential_id?: string;
+}
+
+/**
+ * 钻取状态 = 三个明细过滤 + 可选的用户收窄。
+ *
+ * `username` 单独拿出来是因为它在后端对应**作用域**参数（`_scope`）而非明细
+ * 过滤列：operator 传它可看指定用户，viewer 传了也会被强制改回自己。
+ */
+export interface StatsDrill extends StatsEventFilters {
+  username?: string;
+}
+
+/** CSV 导出结果：文件内容 + 行数/截断（取自响应头）。 */
+export interface CsvExport {
+  blob: Blob;
+  rowCount: number;
+  /** 命中导出上限被截断：页面需提示用户收窄条件 */
+  truncated: boolean;
+}
+
+/** 三角色：与后端 src/auth/rbac.py 的 ROLE_* 字面量一致。 */
+export type Role = "admin" | "operator" | "viewer";
+
+export const ROLE_LABELS: Record<Role, string> = {
+  admin: "管理员",
+  operator: "操作员",
+  viewer: "只读",
+};
+
+export const ROLE_OPTIONS: { value: Role; label: string }[] = [
+  { value: "admin", label: "管理员" },
+  { value: "operator", label: "操作员" },
+  { value: "viewer", label: "只读" },
+];
+
+export interface SessionInfo {
+  username: string;
+  is_admin: boolean;
+  /** 凭证写门槛（admin 或 operator）：决定凭证页写操作与全量统计是否可见 */
+  is_operator: boolean;
+  role: Role;
+  /** 首登/被重置后必须改密：为 true 时前端弹不可关闭的改密对话框 */
+  must_change_password: boolean;
+}
+
+/** 管理台用户（GET /api/users 的一行）。**绝不包含密码哈希**。 */
+export interface UserRow {
+  username: string;
+  role: Role;
+  enabled: boolean;
+  must_change_password: boolean;
+  created_at: number;
+  updated_at: number;
+  created_by: string | null;
+  /** 是否有待使用的一次性激活令牌（摘要本身不会下发） */
+  pending_activation: boolean;
+}
+
+/** 创建/重置用户时返回：明文令牌只出现这一次。 */
+export interface ActivationIssued {
+  username: string;
+  activate_token: string;
+  expires_at: number;
+  role?: Role;
+}
+
+/** 审计流水一行（audit_events 表）。 */
+export interface AuditEvent {
+  id: string;
+  ts: number;
+  actor: string;
+  action: string;
+  target: string | null;
+  detail: string;
+  ip: string | null;
+  ok: 0 | 1;
+}
+
+export interface AuditResponse {
+  events: AuditEvent[];
+  /** 与 events 同一套过滤条件下的总条数（分页算页数用） */
+  total: number;
+  /** 可选的 action 枚举（与后端 src/audit/actions.py 同源） */
+  actions: string[];
+  /** action → 中文标签 */
+  labels: Record<string, string>;
+}
+
+export interface ActivationDescribe {
+  username: string;
+  valid: boolean;
+}
+
+export interface CredentialsResponse {
+  credentials: Credential[];
+  /** 调度主到期排序窗口（秒）；与列表中各凭证的到期积分同一口径 */
+  expiry_window_seconds: number;
+  /** 调度次到期排序窗口（秒）；主窗口打平时才参与排序 */
+  expiry_secondary_window_seconds: number;
+  /** token 到期预警阈值（秒）：剩余低于它时前端标红 */
+  token_expiry_warning_seconds: number;
+  viewer: string;
+  is_admin: boolean;
+  /** 凭证写门槛（admin 或 operator）：与后端 require_operator 同口径 */
+  is_operator: boolean;
+}
+
+export interface UpstreamAuthStart {
+  flow: "poll" | "callback" | "paste";
+  state: string;
+  auth_url: string | null;
+  interval: number | null;
+}
+
+export interface UpstreamAuthPoll {
+  status: "pending" | "success";
+  credential_id?: string;
+}
+
+/** 后端保证是稳定的机器可读枚举，不是 Python 异常类名。 */
+export type ProbeFailureReason =
+  | "credential_rejected"
+  | "rate_limited"
+  | "upstream_unavailable"
+  | "upstream_rejected"
+  | "upstream_response_invalid"
+  | "upstream_timeout"
+  | "network_unreachable"
+  | "unknown_error";
+
+export interface ProbeResult {
+  probed: boolean;
+  remaining?: number;
+  total?: number;
+  reason?: ProbeFailureReason;
+}
+export interface CheckinStatus {
+  active: boolean;
+  today_checked_in: boolean;
+  /** 连续签到天数；渠道不给时为 null */
+  streak_days: number | null;
+  /** 今日/累计积分；渠道不给时为 null */
+  today_credit: number | null;
+  total_credits: number | null;
+  activity_name: string;
+  is_streak_day: boolean;
+}
+
+/** 成长中心单步结果：done=有收获；idle=无事可做（不是错误）；skipped=开关关闭；failed 才是问题 */
+export type GrowthStepStatus = "done" | "idle" | "skipped" | "failed";
+
+export interface GrowthStepResult {
+  name: string;
+  status: GrowthStepStatus;
+  detail: string;
+  credit: number | null;
+}
+
+export interface GrowthRunResult {
+  ok: boolean;
+  /** 一行中文汇报 */
+  report: string;
+  credit: number | null;
+  energy: number | null;
+  streak_days: number | null;
+  /** 登录态失效：需要重新登录桌面端 */
+  session_dead: boolean;
+  steps: GrowthStepResult[];
+}
+
+/** 活跃上报单次结果 */
+export interface ActivityReportResult {
+  ok: boolean;
+  message: string;
+}
+
+/** 成长中心运行记录（growth_events 表一行） */
+export interface GrowthEvent {
+  id: string;
+  credential_id: string;
+  ts: number;
+  ok: 0 | 1;
+  session_dead: 0 | 1;
+  report: string;
+  credit: number | null;
+  energy: number | null;
+  streak_days: number | null;
+  /** auto=定时任务；manual=管理台手动执行 */
+  trigger: string;
+}
+
+/** 变动流水：两次额度探测之间的**净变化**，不是动作归因。 */
+export interface CreditEvent {
+  id: string;
+  credential_id: string;
+  /** 观测时刻（本次探测写回时间） */
+  ts: number;
+  /** 变化覆盖起点（上次成功探测时刻）；首次建立基线时为 null */
+  window_start: number | null;
+  before: number | null;
+  after: number | null;
+  /** after - before；两端任一未知时为 null（不猜成 0） */
+  delta: number | null;
+  /** observed=两次探测间净变化；sync=首次建立基线（无对照） */
+  source: string;
+  /** 账本：pool=每日 token 池（福利模型）；credits=积分账（内置模型） */
+  ledger: string;
+}
+
+export interface CheckinResult {
+  ok: boolean;
+  credit: number | null;
+  code: number | null;
+  message: string;
+  /** 渠道把「已签到」返回成 400 + code=10001，这不是错误 */
+  already_checked_in: boolean;
+  /** 渠道可选回填的活动状态（CodeBuddy 有；TRAE 为 null） */
+  status: CheckinStatus | null;
+}
+
+/** 批量动作：与后端 `BATCH_ACTIONS` 同口径（只收已有单条端点的动作）。 */
+export type BatchAction = "probe" | "toggle" | "checkin" | "revive";
+
+/**
+ * 批量执行结果的一行。
+ *
+ * `detail` 的形状随动作变化（probe → ProbeResult，checkin → CheckinResult，
+ * toggle/revive → 无）。逐条成功与否看 `ok`，失败原因看 `error`——两者分开
+ * 是因为「探测完成但上游拒绝」是 ok=false 的**正常结果**（detail 里有 reason），
+ * 而 error 表示这条根本没执行到上游（凭证不存在 / 渠道不支持 / 意外异常）。
+ */
+export interface BatchResultRow {
+  id: string;
+  ok: boolean;
+  error?: string;
+  detail?: ProbeResult | CheckinResult;
+}
+
+export interface BatchResult {
+  action: BatchAction;
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: BatchResultRow[];
+}
+
+/**
+ * 模型能力分：Artificial Analysis 的三项指数，经 OpenRouter 公开接口分发。
+ *
+ * 后端按候选键等值匹配（唯一命中才带），匹配不到时整个字段缺失（不是 null）。
+ * 三项都可能没有（上游只给了其中几项），故逐个判存在性。
+ */
+export interface ModelBenchmarks {
+  /** 综合智能指数（0–100 量级的排名分） */
+  intelligence_index?: number;
+  /** 编程指数 */
+  coding_index?: number;
+  /** 智能体（agentic）指数 */
+  agentic_index?: number;
+  /** 数据来源标识（当前恒为 "openrouter"） */
+  source?: string;
+  /** 上游原始模型 id（如 `z-ai/glm-5.3`），供溯源 */
+  source_model?: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  object: string;
+  owned_by: string;
+  providers: Provider[];
+  /**
+   * 展示名（后端已统一清洗：`Kimi K3` / `LongCat 2.5 Preview`）。
+   * 上游没给可读名时由 id 派生；连派生都不出（id 本身是 `free` 之类噪声）
+   * 才缺失，此时前端回退显示 id。
+   */
+  name?: string;
+  /** 以下为可选元数据：上游提供才透传（见 src/api/models.py 的 _META_FIELDS） */
+  credit_rate?: number;
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+  supports_images?: boolean;
+  supports_tool_call?: boolean;
+  supports_reasoning?: boolean;
+  /** 上游为该模型配置的默认推理档位（字符串，如 `high` / `medium`；无则为空串/缺失） */
+  default_effort?: string;
+  /** 多渠道模型才有：按渠道给出倍率与**该渠道实际请求的 key**（raw key 永不改动） */
+  by_provider?: Record<string, { credit_rate?: number; raw_id?: string; benefit?: boolean }>;
+  /**
+   * 福利模型标记（当前只有 CodeArts）：来自「限时免费套餐」目录，走每日
+   * token 池而非积分账、上游不给倍率。单渠道条目读这里；多渠道按
+   * `by_provider.{渠道}.benefit` 分渠道判断（见 providerBenefit）。
+   */
+  benefit?: boolean;
+  /** 能力分（Artificial Analysis 指数）：匹配不到该模型的第三方成绩时整个字段缺失 */
+  benchmarks?: ModelBenchmarks;
+}
+
+/**
+ * 模型列表页（GET /api/model-catalog）一行：OpenRouter 的模型明细。
+ *
+ * 价格单位 USD / 百万 token；其余为上游提供的元数据。缺失字段为
+ * null / 空数组 / false（页面显示 — 或空）。
+ *
+ * OpenRouter 不提供 `family` / 开放权重 / **原厂发布时间**三列，后端固定给
+ * null / false / null。前端只展示 `knowledge`；`release_date` 字段保留在契约里
+ * 但恒为 null（上游有 `created`，那是「收录进 OpenRouter 的时间」，不是原厂
+ * 发布日，标成发布日期是错的，故不给）。
+ */
+export interface ModelCatalogEntry {
+  /** OpenRouter 的模型 id（含厂商前缀，如 `z-ai/glm-5.3`），也是匹配键 */
+  id: string;
+  /** 展示名（上游清洗过）；上游未给时为 null */
+  name: string | null;
+  /** id 的厂商前缀（如 `z-ai`）；id 无前缀时为空串 */
+  provider: string;
+  family: string | null;
+  /** 知识截止日期（YYYY-MM-DD）；上游约 1/3 条目未给，为 null */
+  knowledge: string | null;
+  /** 恒为 null：OpenRouter 不提供原厂发布时间，页面不展示（见上方说明） */
+  release_date: string | null;
+  /** 上下文窗口 token 上限；未知为 null */
+  context: number | null;
+  /** 单次输出 token 上限；未知为 null */
+  max_output: number | null;
+  input_modalities: string[];
+  output_modalities: string[];
+  attachment: boolean;
+  reasoning: boolean;
+  tool_call: boolean;
+  structured_output: boolean;
+  open_weights: boolean;
+  /** 输入价（USD / 百万 token） */
+  input: number;
+  output: number;
+  /** 缓存命中读价；上游未声明时与 input 同价（成本就是这么算的） */
+  cache_read: number;
+  /** 缓存写入价；上游未声明时为 null */
+  cache_write: number | null;
+  /**
+   * 能力分（Artificial Analysis 指数，经 OpenRouter 公开接口）。
+   * 后端按同一套匹配口径补分，匹配不到时字段缺失（页面显示 —）。
+   */
+  benchmarks?: ModelBenchmarks;
+  /**
+   * 该模型是否**当前渠道真能提供**（与 `/v1/models` 同口径：只算有可用凭证、
+   * 且过当前黑名单的渠道）。OpenRouter 收录数百条，多数本服务没接；页面据此
+   * 提供「只看当前渠道获取到的模型」过滤。无可用渠道时全为 false。
+   */
+  available: boolean;
+}
+
+/**
+ * 当前生效的模型目录快照（GET /api/model-catalog）。
+ *
+ * 由后台 `openrouter_catalog` 任务从 OpenRouter 一次抓取（刊例价 + 明细元数据 +
+ * 能力分）并落盘；既是统计页成本估算的价格来源，也是「模型列表」页的数据源。
+ * 本结构只读展示（成本计算在后端）。
+ */
+export interface ModelCatalogResponse {
+  models: ModelCatalogEntry[];
+  /** 目录全量条数（不受筛选影响，页头展示「N / 总数」用） */
+  count: number;
+  /** 当前筛选（q / only_available）命中的总条数（分页算页数用） */
+  total: number;
+  /** 刊例价币种，当前恒为 "USD" */
+  currency: string;
+  /** 成本估算当前生效的 USD→CNY 汇率（热更项 USD_CNY_RATE） */
+  usd_cny_rate: number;
+  /**
+   * 目录（价表 + 明细 + 能力分）快照保存时刻（epoch 秒）；无快照时为 null。
+   * 三者同一次抓取，故只有一个时刻。
+   */
+  saved_at: number | null;
+}
+
+/**
+ * 一条可热更运行时配置（GET/PUT /api/settings）。
+ *
+ * 关键语义：`value` 是**当前生效值**（DB 覆盖 > .env），`default` 是 .env
+ * 默认值，`overridden` 表示该项正被 DB 覆盖。界面必须同时展示这三个，
+ * 否则用户改了 .env 却发现不生效，会以为是 bug——实际是 DB 覆盖在起作用。
+ */
+export interface RuntimeSetting {
+  key: string;
+  /** 对应的环境变量名（大写），供用户对照 .env */
+  env_name: string;
+  label: string;
+  description: string;
+  /** "int" | "float" | "bool" | "str"（后端类型名） */
+  kind: string;
+  value: string | number | boolean;
+  default: string | number | boolean;
+  overridden: boolean;
+  /** 所属后台任务 key（见 TaskStatus.key）；null = 网关/调度等非任务配置 */
+  task: string | null;
+  /** task 为 null 时的网关卡组 key（见 SettingsResponse.groups）；task 非空时为 null */
+  group: string | null;
+}
+
+/** 网关卡组（后端下发顺序与文案），用于把无任务归属的项拆成一级 tab。 */
+export interface SettingsGroup {
+  value: string;
+  label: string;
+}
+
+export interface SettingsResponse {
+  settings: RuntimeSetting[];
+  /** 被 DB 覆盖的项数（0 表示全部来自 .env） */
+  overridden: number;
+  /** 无任务归属配置项的分组表（顺序即展示顺序） */
+  groups: SettingsGroup[];
+}
+
+/**
+ * 一个后台任务的运行态（GET /api/tasks，进程内、重启归零）。
+ *
+ * `last_*` 只描述**真实执行**：签到未到点这类 no-op 轮次不覆盖它们，否则
+ * 「上次执行」会谎报成刚刚跑过，而当天其实一次都没签。`interval_seconds`
+ * 是当前生效值（热更后立刻反映）。
+ */
+export interface TaskStatus {
+  key: string;
+  name: string;
+  description: string;
+  interval_seconds: number;
+  /** 开关类任务（目前只有活跃上报）的当前状态；其余恒为 true */
+  enabled: boolean;
+  /** 此刻是否有一轮在跑（周期循环或另一次手动触发）；界面据此禁用按钮 */
+  running: boolean;
+  /** 本进程内真实执行过的轮数（no-op 不计） */
+  runs: number;
+  last_started_at: number | null;
+  last_finished_at: number | null;
+  last_ok: boolean | null;
+  last_report: Record<string, unknown> | null;
+  last_error: string | null;
+}
+
+export interface TasksResponse {
+  tasks: TaskStatus[];
+  /** 服务端当前时间（epoch 秒）：算「距今多久」用服务端时钟，避免浏览器偏移 */
+  server_time: number;
+}
+
+/**
+ * 手动触发一轮（POST /api/tasks/{key}/run）的返回：任务最新运行态 + 本轮结果。
+ *
+ * `ran=false` 有两种成因，界面文案必须区分：`busy=true` 是「已在跑、本次没
+ * 排上」，`busy=false` 是「跑了但是 no-op」（任务被关掉，`run_once` 返回
+ * None）。把后者说成「已运行」就是在谎报。
+ */
+export interface TaskRunResult extends TaskStatus {
+  ran: boolean;
+  busy: boolean;
+}
+
+/** 一条运维告警记录（GET /api/alerts，落库、重启不丢）。 */
+export interface AlertEvent {
+  id: string;
+  ts: number;
+  /** pool_empty | task_failed | token_expiring | error_rate */
+  rule: string;
+  /** critical | warning */
+  severity: string;
+  /** 具体对象：pool / 任务 key / 凭证 id / 渠道 */
+  scope: string;
+  message: string;
+  /** JSON 字符串（后端原样存储），界面不解析 */
+  detail: string;
+  /** webhook 是否投递成功（0=未配置或失败） */
+  delivered: 0 | 1;
+  delivery_error: string | null;
+  /** 恢复时刻（epoch 秒）；null = 仍在告警中。迟滞确认恢复后由后台写入 */
+  resolved_at: number | null;
+}
+
+export interface AlertsResponse {
+  alerts: AlertEvent[];
+  /** 告警总数（分页算页数用） */
+  total: number;
+}
+
+/**
+ * 上游状态档位（GET /api/upstream-status，与后端 `src/upstream_status.py` 的
+ * `LEVEL_*` 一一对应）。
+ *
+ * 六档而非三档：`maintenance` 是「计划内维护」——不是故障，但也不该显示成
+ * 一切正常；`partial` 与 `major` 分开才能表达「部分模型受影响」与「整体挂了」。
+ */
+export type UpstreamLevel =
+  | "operational"
+  | "degraded"
+  | "partial"
+  | "major"
+  | "maintenance"
+  | "unknown";
+
+/** 一个组件 / 模型的当前状态（详情文本由后端解析器拼好，前端不再二次加工）。 */
+export interface UpstreamComponent {
+  name: string;
+  level: UpstreamLevel;
+  detail: string | null;
+}
+
+/**
+ * 一条事故。`ongoing` 是**归一化后**的生命周期：各源侧写法不同（Statuspage 的
+ * investigating/identified/monitoring、OpenCode 的 resolvedAt、DeepSeek 正文里的
+ * `Status: resolved`），后端统一成这一个布尔，前端只认它。
+ */
+export interface UpstreamIncident {
+  title: string;
+  level: UpstreamLevel;
+  ongoing: boolean;
+  updated_at: number | null;
+  url: string | null;
+  detail: string | null;
+}
+
+/** 一个状态源的一次抓取结果（抓取失败也在内，带 `error`）。 */
+export interface UpstreamSource {
+  /** 源 key（与后端 `SOURCE_SPECS` 一致），仅用于 React key 与测试定位 */
+  key: string;
+  label: string;
+  /** `channel` = 与本站某个渠道一一对应；`model` = 模型 / 上游方，经渠道间接使用 */
+  scope: "channel" | "model";
+  /** 给人看的官方状态页地址（卡片外链） */
+  page_url: string;
+  /** 本站关联渠道 key（仅 channel 级非空） */
+  related_providers: string[];
+  level: UpstreamLevel;
+  /** 该源本次抓取时刻（epoch 秒） */
+  fetched_at: number;
+  /** 抓取 / 解析失败原因；成功为 null */
+  error: string | null;
+  /** 源侧自己声明「数据已过期」（目前只有 OpenCode Zen 提供） */
+  source_stale: boolean;
+  components: UpstreamComponent[];
+  incidents: UpstreamIncident[];
+}
+
+/**
+ * 上游状态聚合快照（GET /api/upstream-status，进程内、重启归零）。
+ *
+ * `summary.abnormal` 是「除 operational / unknown 之外的一切」——抓取失败
+ * 只计入 `unknown`，不该冒充上游故障（一个源连不上，不代表它挂了）。
+ */
+export interface UpstreamStatusResponse {
+  summary: {
+    level: UpstreamLevel;
+    operational: number;
+    abnormal: number;
+    unknown: number;
+    total: number;
+  };
+  /** 快照抓取时刻（epoch 秒）；从未抓取为 null */
+  fetched_at: number | null;
+  sources: UpstreamSource[];
+  /** 后台抓取任务的当前开关（热更项） */
+  enabled: boolean;
+  /** 后台抓取任务的当前周期（秒，热更项） */
+  interval_seconds: number;
+  /** 服务端当前时间（epoch 秒）：算「距今多久」用服务端时钟，避免浏览器偏移 */
+  server_time: number;
+}
+
+/**
+ * 侧栏角标可挂载的键：每一项对应侧栏一个导航项，值即「待办计数」。
+ *
+ * 与 `NavBadges` 的字段一一对应，但**不含** `upstream_level`——那是给
+ * `upstream` 定色调的辅助字段，本身不是一个角标。
+ */
+export type NavBadgeKey =
+  | "credentials"
+  | "alerts"
+  | "tasks"
+  | "upstream"
+  | "users"
+  | "api_keys"
+  | "model_catalog_stale";
+
+/**
+ * 侧栏「数据提醒」角标（GET /api/nav-badges）。
+ *
+ * **按角色裁剪**：后端只下发当前角色有权看的键，**缺失 = 无权看**（不是 0）。
+ * 所以前端判定必须先判 `undefined`（无权限 / 未加载）再判值，两者都不渲染。
+ *
+ * 与各页面数据**不是同一份口径**：这里只数「待办」，例如告警只数未恢复的
+ * （页面 `total` 含已恢复历史）、任务用「上次失败」而非「连续失败达阈值」。
+ */
+export interface NavBadges {
+  /** 需重新登录 / 额度耗尽的凭证数（operator+） */
+  credentials?: number;
+  /** 未恢复的告警数（admin） */
+  alerts?: number;
+  /** 上次执行失败且已启用的后台任务数（admin） */
+  tasks?: number;
+  /** 异常的上游状态源数（operator+） */
+  upstream?: number;
+  /** 上游整体档位（最差档）：仅用于给 `upstream` 角标定色调 */
+  upstream_level?: UpstreamLevel;
+  /** 待激活账号数（admin） */
+  users?: number;
+  /** 本人已过期或 7 天内到期的 API Key 数（全员，仅本人） */
+  api_keys?: number;
+  /** 模型目录快照是否陈旧（布尔，operator+）；渲染成文字标记而非计数 */
+  model_catalog_stale?: boolean;
+}

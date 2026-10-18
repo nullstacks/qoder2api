@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 模板：绝对路径写成 __PROJECT_ROOT__、服务器地址写成 __FRP_SERVER_ADDR__，
+     安装时用 scripts/install-frpc.sh 渲染成本机路径后写入
+     ~/Library/LaunchAgents/com.coding2api.frpc.plist 并加载。
+     launchd 不展开 $HOME / 环境变量，路径必须是绝对路径，所以只能安装时替换。
+     token 不放这里（launchctl print 会把 plist 原样打印出来），走
+     secrets/frpc-token 文件。 -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.coding2api.frpc</string>
+
+    <!-- 入口是 wrapper 而不是直接 frpc：frpc 的安装位置随安装方式而变
+         （Homebrew /opt/homebrew/bin、/usr/local/bin 或自行下载），
+         由 scripts/frpc-run.sh 解析后 exec，plist 因此只需一个占位符。 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__PROJECT_ROOT__/scripts/frpc-run.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_ROOT__</string>
+
+    <!-- 登录时自动启动 -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- 进程退出/崩溃后自动拉起 -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_ROOT__/logs/frpc.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_ROOT__/logs/frpc.err.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- PATH 只有系统目录：frpc 若装在 nvm / 自定义前缀下，由
+             scripts/frpc-run.sh 解析后追加，不在这里写死。 -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- frp 原生支持 {{ .Envs.X }} 模板（见 deploy/frp/frpc.toml）：
+             服务器地址与 token 文件路径由此注入，配置文件里不含机器特定值。 -->
+        <key>FRP_SERVER_ADDR</key>
+        <string>__FRP_SERVER_ADDR__</string>
+        <key>FRP_TOKEN_FILE</key>
+        <string>__PROJECT_ROOT__/secrets/frpc-token</string>
+    </dict>
+</dict>
+</plist>

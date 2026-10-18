@@ -1,0 +1,40 @@
+# frpc —— 反向隧道**客户端**（跑在家中 Mac 上）
+#
+# 用途：主动连出到 VPS 的 frps:7000（家宽在 CGNAT 后也能建隧道），把本机
+# 127.0.0.1:8000 反向映射到 VPS 的 127.0.0.1:8000，由 VPS 上的 nginx 对外服务。
+#
+# 本文件**不含任何机器特定值**：服务器地址与 token 文件路径都用 frp 原生的
+# `{{ .Envs.X }}` 模板从环境变量取（自 v0.52.0 支持），由 launchd 注入
+# （见 deploy/launchd/com.coding2api.frpc.plist 与 scripts/install-frpc.sh）。
+# 这样仓库里的这份配置在任意机器克隆后都能直接用，无需就地改值。
+#
+# 版本：frp v0.71.1。
+
+serverAddr = "{{ .Envs.FRP_SERVER_ADDR }}"
+serverPort = 7000
+
+# 与 frps 相同的 token（独立文件、权限 600，不入库、不进 plist）。
+auth.method = "token"
+auth.tokenSource.type = "file"
+auth.tokenSource.file.path = "{{ .Envs.FRP_TOKEN_FILE }}"
+
+# 首次登录失败不退出：VPS 重启 / 网络抖动时 frpc 自己重连，比「退出→launchd
+# 每 10s 重拉一次」平稳（后者会在每次 VPS 重启时制造一串进程启停）。
+# 注意 launchd 的 KeepAlive 仍然兜底真正的崩溃。
+loginFailExit = false
+
+# 日志走 stdout（launchd 收到 logs/frpc.*.log，由 newsyslog 轮转）。
+log.to = "console"
+log.level = "info"
+
+[[proxies]]
+name = "coding2api"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8000
+remotePort = 8000
+
+# 健康检查打本机的存活探针（/health 恒 200，见 src/main.py）：本机服务没起来
+# 时不在 frps 上挂一个死映射，让 nginx 直接回 502，而不是把请求丢进黑洞后
+# 卡到超时。maxFailed=3 是给「重启服务」留的宽限，避免一次抖动就摘映射。
+healthCheck = { type = "http", path = "/health", intervalSeconds = 10, timeoutSeconds = 3, maxFailed = 3 }

@@ -1,0 +1,48 @@
+# frps —— 反向隧道**服务端**（跑在 VPS 上）
+#
+# 用途：接收家中 Mac 的 frpc 连接，把 Mac 的 127.0.0.1:8000 映射到 VPS 的
+# 127.0.0.1:8000；同机 nginx 终止 TLS 并反代到那个回环端口（见 deploy/nginx/）。
+# 家宽在 CGNAT 后没有可入站地址，只能由内网侧主动连出建隧道。
+#
+# 安装（Linux + systemd）：
+#     sudo install -d -m 755 /etc/frp
+#     sudo install -m 644 deploy/frp/frps.toml /etc/frp/frps.toml
+#     openssl rand -hex 32 | sudo tee /etc/frp/frps-token >/dev/null
+#     sudo chmod 600 /etc/frp/frps-token && sudo chown frps:frps /etc/frp/frps-token
+#     sudo install -m 644 deploy/systemd/frps.service /etc/systemd/system/
+#     sudo systemctl daemon-reload && sudo systemctl enable --now frps
+#
+# 版本：frp v0.71.1。TOML 自 v0.52.0 起支持（INI 已废弃，新特性只在 TOML/YAML/JSON）。
+
+bindAddr = "0.0.0.0"
+bindPort = 7000
+
+# 映射出来的端口只监听回环：公网入口是 nginx:443，frp 的 8000 不对公网暴露。
+# 不设这一项时 frps 按 bindAddr(0.0.0.0) 绑定，等于把**未加 TLS** 的明文 8000
+# 直接开在公网——可绕过 nginx 的 TLS 与应用自身的 Host 校验，必须显式收紧。
+proxyBindAddr = "127.0.0.1"
+
+# 认证 token 从独立文件读（权限 600），不内联进本文件：配置文件常被 cp / 备份 /
+# 贴进工单，内联 token 等于随处分发。客户端须配同一个值。
+auth.method = "token"
+auth.tokenSource.type = "file"
+auth.tokenSource.file.path = "/etc/frp/frps-token"
+
+# 只接受启用 TLS 的客户端连接（frpc 的 transport.tls.enable 默认即为 true）。
+# 隧道要跨公网走，明文传输等于把回源流量摊在链路上。
+transport.tls.force = true
+
+# Dashboard 只监听回环、不开 BasicAuth：经 SSH 端口转发访问即可
+#     ssh -L 7500:127.0.0.1:7500 <vps>   # 再开 http://127.0.0.1:7500
+# 不对公网暴露 dashboard，也就不用把密码写进配置文件。
+webServer.addr = "127.0.0.1"
+webServer.port = 7500
+
+# 日志走 stdout（systemd 收进 journald，自带轮转）。应用/服务不自己写文件、
+# 不自己轮转，与 coding2api 本体的约定一致（见 src/webapp/logging.py 的说明）。
+log.to = "console"
+log.level = "info"
+
+# 只允许 frpc 申请这一个端口：越权的映射请求直接被服务端拒绝，
+# 免得客户端被篡改后把 VPS 当跳板开一堆端口。
+allowPorts = [{ single = 8000 }]

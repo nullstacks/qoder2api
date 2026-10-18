@@ -1,0 +1,219 @@
+services:
+  coding2api:
+    build: .
+    image: ghcr.io/robbsluo/coding2api:latest
+    container_name: coding2api
+    restart: unless-stopped
+    # 让容器能通过 host.docker.internal 访问宿主（Docker Desktop 自带，
+    # Linux / Colima 需显式加这条）。用于 PROVIDER_PROXIES 指向宿主代理，
+    # 例如 codebuddy=http://host.docker.internal:7897 —— 写 127.0.0.1 在容器里
+    # 指向容器自身，代理静默连不上（启动期只校验格式、不校验可达）。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # 必填：凭证列加密密钥。丢失后已存凭证全部不可解，只能重录。
+      APP_SECRET: ${APP_SECRET:?set APP_SECRET in .env}
+      # 管理台管理员用户名（逗号分隔）；留空则所有用户只读
+      ADMIN_USERNAMES: ${ADMIN_USERNAMES:-admin}
+      # 远程部署时必须设为浏览器可达的地址，TRAE 登录回调依赖它
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:8000}
+      CODEBUDDY_API_ENDPOINT: ${CODEBUDDY_API_ENDPOINT:-https://copilot.tencent.com}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-glm-5.2}
+      # 模型列表黑名单（fnmatch glob，逗号分隔，完全替换语义）
+      MODEL_BLOCKLIST: ${MODEL_BLOCKLIST:-custom_model_*,*sub*agent*,summary,browser_use_*,file_search_agent,default,hunyuan-image-*,hy4-preview-x,qwen3.8-flash,glyph-cluster}
+      QUOTA_PROBE_MINUTES: ${QUOTA_PROBE_MINUTES:-60}
+      # token 预刷新轮询周期（分钟）：短寿命渠道（CodeArts STS 2h）的预刷新
+      # 窗口会被封顶，窗口必须窄于该周期才不会整轮漏过、拖到到期才刷
+      REFRESH_INTERVAL_MINUTES: ${REFRESH_INTERVAL_MINUTES:-30}
+      # 渠道模型列表兜底刷新周期（分钟）：没有它，模型表只在有人调 /v1/models 时
+      # 才刷新，纯 API 用法的部署会让「模型→渠道」归属表与落盘快照变陈旧
+      MODEL_CATALOG_MINUTES: ${MODEL_CATALOG_MINUTES:-30}
+      # OpenRouter 模型目录刷新周期（分钟）+ 成本估算汇率：一次抓取同时供刊例价
+      # （USD/百万 token）、明细元数据与能力指数三处；汇率只影响之后写入的成本
+      OPENROUTER_CATALOG_MINUTES: ${OPENROUTER_CATALOG_MINUTES:-1440}
+      USD_CNY_RATE: ${USD_CNY_RATE:-6.70}
+      OPENROUTER_MODELS_URL: ${OPENROUTER_MODELS_URL:-https://openrouter.ai/api/v1/models}
+      # 成长中心（仅 CodeBuddy）：一轮领取周期，以及是否允许不可逆动作
+      # （抽奖/连登兑换/开 Buddy 盲盒/消耗补登卡）
+      GROWTH_INTERVAL_MINUTES: ${GROWTH_INTERVAL_MINUTES:-60}
+      GROWTH_IRREVERSIBLE_ACTIONS: ${GROWTH_IRREVERSIBLE_ACTIONS:-true}
+      # 活跃上报（仅 CodeBuddy，默认关闭）：补发一条对话事件续连登；
+      # 官方条款禁止脚本篡改活动数据，开启前请自行评估账号风险
+      ACTIVITY_REPORT_ENABLED: ${ACTIVITY_REPORT_ENABLED:-false}
+      ACTIVITY_REPORT_HOUR: ${ACTIVITY_REPORT_HOUR:-10}
+      # 运维告警：周期评估四类风险，命中落站内记录并可选推送 webhook。
+      # webhook 留空 = 只留站内记录、不外推（多个地址用逗号分隔）
+      ALERT_ENABLED: ${ALERT_ENABLED:-true}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_INTERVAL_MINUTES: ${ALERT_INTERVAL_MINUTES:-5}
+      # 同一 (规则, 对象) 的静默窗（分钟）；0 关闭静默（每轮都报）
+      ALERT_SILENCE_MINUTES: ${ALERT_SILENCE_MINUTES:-30}
+      # 告警迟滞：连续命中 N 轮才告警、连续 M 轮未命中才确认恢复（写 resolved_at
+      # 并外推恢复通知）。1 = 不迟滞。
+      ALERT_FOR_TICKS: ${ALERT_FOR_TICKS:-1}
+      ALERT_CLEAR_TICKS: ${ALERT_CLEAR_TICKS:-2}
+      # 池耗尽：ready 少于该值即告警；0 关闭该规则
+      ALERT_POOL_READY_MIN: ${ALERT_POOL_READY_MIN:-1}
+      # 任务连续失败达到该次数即告警；0 关闭该规则
+      ALERT_TASK_FAILURES: ${ALERT_TASK_FAILURES:-3}
+      # token 剩余少于该小时数即告警；0 关闭该规则
+      ALERT_TOKEN_EXPIRY_HOURS: ${ALERT_TOKEN_EXPIRY_HOURS:-24}
+      # 上游错误率：窗内失败占比达到阈值且样本数足够时告警；阈值 0 关闭该规则
+      ALERT_ERROR_RATE_THRESHOLD: ${ALERT_ERROR_RATE_THRESHOLD:-0.5}
+      ALERT_ERROR_RATE_MIN_REQUESTS: ${ALERT_ERROR_RATE_MIN_REQUESTS:-20}
+      ALERT_ERROR_RATE_WINDOW_MINUTES: ${ALERT_ERROR_RATE_WINDOW_MINUTES:-15}
+      # SQLite 备份后台任务：周期（分钟）与保留份数；0 份表示不清理
+      BACKUP_INTERVAL_MINUTES: ${BACKUP_INTERVAL_MINUTES:-1440}
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      # 上游状态页聚合（只读展示，不参与选号/熔断）：周期（分钟）与开关。
+      # 数据只在内存、不落盘；单源 HTTP 超时（秒）供 8 个源并发抓取
+      UPSTREAM_STATUS_ENABLED: ${UPSTREAM_STATUS_ENABLED:-true}
+      UPSTREAM_STATUS_MINUTES: ${UPSTREAM_STATUS_MINUTES:-5}
+      UPSTREAM_STATUS_TIMEOUT_SECONDS: ${UPSTREAM_STATUS_TIMEOUT_SECONDS:-10.0}
+      # 到期排序窗口（秒）：把距到期 ≤ 该值的积分加总，多的账号先用；≤0 关闭
+      QUOTA_EXPIRY_WINDOW_SECONDS: ${QUOTA_EXPIRY_WINDOW_SECONDS:-129600}
+      # 次到期排序窗口（秒）：主窗口打平（含都为 0）时才比较；≤0 关闭该级
+      QUOTA_EXPIRY_SECONDARY_WINDOW_SECONDS: ${QUOTA_EXPIRY_SECONDARY_WINDOW_SECONDS:-604800}
+      # 会话粘性 TTL（秒）：同一对话多轮请求固定用同一凭证；≤0 关闭
+      CONVERSATION_STICKY_SECONDS: ${CONVERSATION_STICKY_SECONDS:-3600}
+      # token 到期预警阈值（秒）：剩余时间低于该值时管理台标红；≤0 关闭预警
+      TOKEN_EXPIRY_WARNING_SECONDS: ${TOKEN_EXPIRY_WARNING_SECONDS:-3600}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # 时区：镜像默认 Asia/Shanghai，但 .env 里设的 TZ 不在这里透传就会被
+      # 静默忽略（compose 的 .env 只用于 ${} 插值，不自动注入容器）。
+      TZ: ${TZ:-Asia/Shanghai}
+      # ---- 高级项：默认值已合适，需要时在 .env 里设即可生效 ----
+      # 注意：compose 的 .env 只用于 ${VAR} 插值，只有在这里透传过的变量
+      # 才会真正进容器；漏透传会让 .env 里的设置静默失效（无任何报错）。
+      # Host 白名单（防 DNS rebinding）；空 = 本地回环 + PUBLIC_BASE_URL 主机
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
+      # 额外放行 TestClient 的 Host `testserver`；仅测试用，生产保持 false
+      ALLOW_TEST_HOST: ${ALLOW_TEST_HOST:-false}
+      # 是否采信 X-Forwarded-For 判定来源 IP（API Key 的 allowed_ips 用）。
+      # 默认 false；仅在本服务前恰好一层受信反代时开启，否则客户端可伪造。
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      # 上游端点白名单（逗号分隔）；改 CODEBUDDY_API_ENDPOINT 时必须同时含它
+      CODEBUDDY_ALLOWED_ENDPOINTS: ${CODEBUDDY_ALLOWED_ENDPOINTS:-https://copilot.tencent.com,https://www.codebuddy.ai}
+      # CodeBuddy 国际版（独立渠道 codebuddy_intl）的端点与**独立**白名单。
+      # 刻意不含国内站主机：两站 Token 由不同网关签发，混发即泄露。
+      CODEBUDDY_INTL_API_ENDPOINT: ${CODEBUDDY_INTL_API_ENDPOINT:-https://www.codebuddy.ai}
+      CODEBUDDY_INTL_ALLOWED_ENDPOINTS: ${CODEBUDDY_INTL_ALLOWED_ENDPOINTS:-https://www.codebuddy.ai}
+      # OpenCode Zen 免费层端点与其白名单（Zen 无凭证；白名单仅防误配）
+      ZEN_API_ENDPOINT: ${ZEN_API_ENDPOINT:-https://opencode.ai}
+      ZEN_ALLOWED_ENDPOINTS: ${ZEN_ALLOWED_ENDPOINTS:-https://opencode.ai}
+      # Zen 门禁要求的 UA 版本（低于上游阈值会被 426 拒绝）
+      ZEN_OPENCODE_VERSION: ${ZEN_OPENCODE_VERSION:-1.18.0}
+      # Kilo Gateway 免费层端点与其白名单（无凭证；白名单仅防误配）
+      KILO_API_ENDPOINT: ${KILO_API_ENDPOINT:-https://api.kilo.ai/api/gateway}
+      KILO_ALLOWED_ENDPOINTS: ${KILO_ALLOWED_ENDPOINTS:-https://api.kilo.ai/api/gateway}
+      # Qoder（阿里，COSY 私有协议）：真实账号渠道。默认国内 openapi 网关；
+      # 国际版改 QODER_API_ENDPOINT=https://openapi.qoder.sh 并把国际版域名
+      # 保留在白名单里。推理走 gateway.*，额度/登录走 openapi.*。白名单防把
+      # 带 COSY 签名的请求发往未授权主机。
+      QODER_API_ENDPOINT: ${QODER_API_ENDPOINT:-https://openapi.qoder.com.cn}
+      QODER_GATEWAY_ENDPOINT: ${QODER_GATEWAY_ENDPOINT:-https://gateway.qoder.com.cn}
+      QODER_ALLOWED_ENDPOINTS: ${QODER_ALLOWED_ENDPOINTS:-https://openapi.qoder.com.cn,https://gateway.qoder.com.cn,https://openapi.qoder.sh,https://api1.qoder.sh}
+      # CodeArts（华为云码道 / snap-access）：AK/SK 签名渠道。白名单必须含
+      # snap 引擎（推理/令牌）、STS（refresh）、福利网关（模型/领取/余额）、
+      # 门户（PKCE 授权页）。
+      CODEARTS_API_ENDPOINT: ${CODEARTS_API_ENDPOINT:-https://snap-access.cn-north-4.myhuaweicloud.com}
+      CODEARTS_ALLOWED_ENDPOINTS: ${CODEARTS_ALLOWED_ENDPOINTS:-https://snap-access.cn-north-4.myhuaweicloud.com,https://sts.cn-north-4.myhuaweicloud.com,https://opengw.developer.huaweicloud.com,https://codearts.huaweicloud.com}
+      # CodeBuddy 聊天最小间隔（秒）：同凭证顺序连发节流，0 关闭
+      CODEBUDDY_CHAT_MIN_INTERVAL: ${CODEBUDDY_CHAT_MIN_INTERVAL:-5}
+      # CB 国际版聊天最小间隔（秒）：与国内站**各自独立**的节流器
+      CODEBUDDY_INTL_CHAT_MIN_INTERVAL: ${CODEBUDDY_INTL_CHAT_MIN_INTERVAL:-5}
+      # Zen 聊天最小间隔（秒）：独立节流器，0（默认）关闭
+      ZEN_CHAT_MIN_INTERVAL: ${ZEN_CHAT_MIN_INTERVAL:-0}
+      # Kilo 聊天最小间隔（秒）：独立节流器，0（默认）关闭
+      KILO_CHAT_MIN_INTERVAL: ${KILO_CHAT_MIN_INTERVAL:-0}
+      # Qoder / CodeArts 聊天最小间隔（秒）：真实账号渠道，独立节流器
+      QODER_CHAT_MIN_INTERVAL: ${QODER_CHAT_MIN_INTERVAL:-5}
+      CODEARTS_CHAT_MIN_INTERVAL: ${CODEARTS_CHAT_MIN_INTERVAL:-5}
+      # CodeArts 每账号在途并发上限（上游硬限会话数 3）；0 关闭上限
+      CODEARTS_MAX_CONCURRENCY: ${CODEARTS_MAX_CONCURRENCY:-3}
+      # CodeArts 账号滑动窗口（秒）：与上限组合成「窗口内最多启动 N 次」，
+      # 对齐上游「每账号每约 60s 最多 3 个会话」；0 关闭窗口口径
+      CODEARTS_REQUEST_WINDOW_SECONDS: ${CODEARTS_REQUEST_WINDOW_SECONDS:-60}
+      # 11128 内容风控自愈：中和出站正文里的伪装客户端指纹，false 关闭
+      CODEBUDDY_SANITIZE_CHANNEL_MARKERS: ${CODEBUDDY_SANITIZE_CHANNEL_MARKERS:-true}
+      # token 预刷新窗口（小时）
+      REFRESH_SKEW_HOURS: ${REFRESH_SKEW_HOURS:-24}
+      # 全局节流器随机区间（秒）
+      PACER_MIN_SECONDS: ${PACER_MIN_SECONDS:-5}
+      PACER_MAX_SECONDS: ${PACER_MAX_SECONDS:-20}
+      # 诊断：把 /v1 原始请求体落盘到 data/dumps/（含对话内容，仅排查用）
+      DUMP_REQUEST_BODIES: ${DUMP_REQUEST_BODIES:-false}
+      # 截断续写：上游 finish_reason=length 时同凭证自动续写的最多次数；0 关闭
+      AUTO_CONTINUE_MAX: ${AUTO_CONTINUE_MAX:-10}
+      UPSTREAM_COMPLETE_TIMEOUT_SECONDS: ${UPSTREAM_COMPLETE_TIMEOUT_SECONDS:-600}
+      # 流式首事件超时（秒）：出帧前长时间无数据帧就换号重试；0 关闭（推荐 60）
+      STREAM_FIRST_EVENT_TIMEOUT_SECONDS: ${STREAM_FIRST_EVENT_TIMEOUT_SECONDS:-0}
+      # 流式空闲超时（秒）：已出帧后长时间无数据只能以错误帧收尾；0 关闭（推荐 300）
+      STREAM_IDLE_TIMEOUT_SECONDS: ${STREAM_IDLE_TIMEOUT_SECONDS:-0}
+      # 短冷却「等待续上」（秒）：全池都在短冷却时最多等这么久再取一次；0 关闭
+      SHORT_COOLDOWN_WAIT_SECONDS: ${SHORT_COOLDOWN_WAIT_SECONDS:-0}
+      # 单账号在途请求上限（跨渠道全局）；0 = 不限
+      MAX_INFLIGHT_PER_CREDENTIAL: ${MAX_INFLIGHT_PER_CREDENTIAL:-0}
+      # Prometheus 指标出口（GET /metrics，无鉴权，与 /healthz 同口径）；false 关闭
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      # 请求级结构化日志（logfmt，只记 /api、/v1、/authorize；不写 query/正文/用户名）
+      REQUEST_LOG_ENABLED: ${REQUEST_LOG_ENABLED:-true}
+      # 签到定时：本地 HH:MM 逗号分隔，留空 = 全天每 10 分钟（旧行为）；抖动分钟
+      CHECKIN_TIMES: ${CHECKIN_TIMES:-}
+      CHECKIN_JITTER_MINUTES: ${CHECKIN_JITTER_MINUTES:-0}
+      # 管理台日志页环形缓冲行数（0 关闭该页）
+      LOG_BUFFER_LINES: ${LOG_BUFFER_LINES:-500}
+      # 出站剥离思考内容（只过滤响应、不改请求体）；true 开启
+      FORCE_DISABLE_THINKING: ${FORCE_DISABLE_THINKING:-false}
+      # 出站 reasoning_effort 档位映射：渠道=from:to,from:to;*=from:to；留空原样透传
+      REASONING_EFFORT_MAP: ${REASONING_EFFORT_MAP:-}
+      # Anthropic thinking.budget_tokens → reasoning_effort：预算:档位,...；留空不映射
+      ANTHROPIC_THINKING_EFFORTS: ${ANTHROPIC_THINKING_EFFORTS:-}
+      # 上下文压缩：按模型目录里的输入上限裁剪过长对话，避免撞上游硬限制
+      CONTEXT_COMPRESS_ENABLED: ${CONTEXT_COMPRESS_ENABLED:-true}
+      CONTEXT_COMPRESS_RESERVE_TOKENS: ${CONTEXT_COMPRESS_RESERVE_TOKENS:-4096}
+      CONTEXT_COMPRESS_MIN_KEEP_MESSAGES: ${CONTEXT_COMPRESS_MIN_KEEP_MESSAGES:-4}
+      CONTEXT_COMPRESS_SAFETY_RATIO: ${CONTEXT_COMPRESS_SAFETY_RATIO:-0.95}
+      # 跨渠道 fallback 兼容组：主渠道全不可用时按组回退到同义模型（留空关闭）
+      MODEL_FALLBACK_GROUPS: ${MODEL_FALLBACK_GROUPS:-}
+      # 用户自定义模型别名：对外名=模型@渠道;...；留空关闭（列表与执行侧同一份）
+      MODEL_ALIASES: ${MODEL_ALIASES:-}
+      # 按渠道出站代理（启动期）：渠道=代理URL;渠道2=代理URL2，留空直连
+      PROVIDER_PROXIES: ${PROVIDER_PROXIES:-}
+      ENABLE_DOCS: ${ENABLE_DOCS:-false}
+      # 服务监听地址（容器内必须 0.0.0.0 才能被映射访问）
+      HOST: ${HOST:-0.0.0.0}
+      PORT: ${PORT:-8000}
+      # 用户文件路径（容器内固定挂载点，一般无需改）
+      USERS_FILE: ${USERS_FILE:-/app/secrets/users.txt}
+      # SQLite 与运行数据目录（容器内固定挂载点，一般无需改）
+      DATA_DIR: ${DATA_DIR:-/app/data}
+    ports:
+      # 两侧都引用 PORT：README 承诺「PORT 同时决定宿主机映射端口」，而它同时
+      # 是容器内 uvicorn 的监听端口。target 写死 8000 会让 PORT=9000 时
+      # 应用监听 9000、映射却指向 8000，容器永远不 healthy。
+      - "${PORT:-8000}:${PORT:-8000}"
+    # 停机排空窗口：docker 发 SIGTERM 后等这么久再 SIGKILL。必须 >= 应用侧
+    # uvicorn --timeout-graceful-shutdown(30，见 src/main.py GRACEFUL_SHUTDOWN_SECONDS)，
+    # 留 5s 余量让 uvicorn 排空完成、统计落库，再被强杀。
+    stop_grace_period: 35s
+    volumes:
+      # 凭证与统计（SQLite）与用户文件分开挂载
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    healthcheck:
+      # 端口必须与上面的 PORT 同步：健康检查打的是容器内监听端口，写死 8000
+      # 会让非默认 PORT 的部署永远不 healthy。
+      test: ["CMD", "python", "-c", "import os,urllib.request;urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('PORT','8000')}/health\")"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # 日志轮转（唯一声明式、无需运维动手的一层）：json-file 驱动默认
+    # **无上限**，长期运行会把宿主磁盘写满。应用只写 stdout/stderr，
+    # 由 docker 采集，因此限额必须在这里给。
+    # 查看：docker logs coding2api；宿主机路径见 docker inspect 的 LogPath
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

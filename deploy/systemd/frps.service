@@ -1,0 +1,40 @@
+# systemd unit 模板（Linux VPS）：反向隧道服务端 frps。
+#
+# 安装：
+#     sudo useradd --system --no-create-home --shell /usr/sbin/nologin frps
+#     sudo install -m 644 deploy/frp/frps.toml /etc/frp/frps.toml
+#     sudo install -m 644 deploy/systemd/frps.service /etc/systemd/system/
+#     sudo systemctl daemon-reload && sudo systemctl enable --now frps
+#     journalctl -u frps -f          # 看日志
+#
+# 日志：走 journald（StandardOutput=journal），journald 自带容量轮转，无需
+# logrotate。frps 配置里 log.to="console" 与之配套。
+
+[Unit]
+Description=frps — 反向隧道服务端（家中 Mac 的 coding2api 公网入口）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+# frps 不需要 root：7000 与回环 8000 都 > 1024。专用系统账号运行，
+# 即使被攻破也拿不到宿主权限。
+User=frps
+Group=frps
+ExecStart=/usr/local/bin/frps -c /etc/frp/frps.toml
+Restart=always
+RestartSec=5
+
+# 日志交给 journald（自带轮转）
+StandardOutput=journal
+StandardError=journal
+
+# 安全加固：frps 只读配置与 token、不写任何文件
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/frp
+
+[Install]
+WantedBy=multi-user.target

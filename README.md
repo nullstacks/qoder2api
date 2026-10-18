@@ -1,19 +1,16 @@
 # qoder2api
 
-**Qoder as an OpenAI-compatible API — two deployment options:**
+**Qoder (international) as an OpenAI-compatible API on a single Cloudflare
+Worker** — 3 files, zero dependencies, one device-flow login, no server.
 
-| | Self-hosted (Python) | Cloudflare Worker |
-|---|---|---|
-| Files | full Coding2API engine (`src/`) | `worker.js` + `cosy.js` + `rsa-pkcs1.js` (3 files, zero deps) |
-| Login | dashboard or `qoder_oauth.py` | `qoder_oauth.py` → `wrangler secret put QODER_CREDENTIAL` |
-| Quota | full (probe, check-in, refresh) | uses your credential directly |
-| Verified | ✅ 16 models, 4 chat-tested | ✅ 17 models, chat-tested (Kimi-K3 "WORKER-OK", `billable: false`) |
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/nullstacks/qoder2api)
 
-**Live Worker example:** `https://qoder2api.pushkarsingh4343.workers.dev/v1`
-(lock it with your own `API_KEY` secret on deploy)
+**Live example:** `https://qoder2api.pushkarsingh4343.workers.dev/v1`
+(set your own `API_KEY` secret on deploy)
 
-A packaged deployment of [RobbsLuo/Coding2API](https://github.com/RobbsLuo/Coding2API)
-(MIT) configured for **Qoder international**.
+A Worker implementation of the Qoder COSY protocol, based on the
+reverse-engineered client in
+[RobbsLuo/Coding2API](https://github.com/RobbsLuo/Coding2API) (MIT).
 
 ## Models (verified 2026-10-18)
 
@@ -23,10 +20,13 @@ kimi-k2.8-preview · qwen3.7-max · qwen3.7-plus · qwen3.8-max ·
 auto · efficient · performance · ultimate · sonus · cantus
 ```
 
-## Option A — Cloudflare Worker (fastest)
+`GET /v1/models` returns the live list (credit rate, context, modality
+flags included).
+
+## Deploy
 
 ```bash
-# 1. login (prints credential JSON)
+# 1. login — prints a credential JSON (device flow; token never touches a browser)
 pip install httpx
 python3 qoder_oauth.py --test
 
@@ -34,7 +34,7 @@ python3 qoder_oauth.py --test
 npx wrangler login
 npx wrangler deploy
 wrangler secret put QODER_CREDENTIAL        # paste the credential JSON
-wrangler secret put API_KEY                  # your client-facing key (optional lock)
+wrangler secret put API_KEY                 # your client-facing key (optional lock)
 
 # 3. test
 curl https://<your-worker>.workers.dev/v1/chat/completions \
@@ -42,44 +42,45 @@ curl https://<your-worker>.workers.dev/v1/chat/completions \
   -d '{"model":"kimi-k3","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-**Worker internals** (`cosy.js`): the Qoder COSY protocol ported to
-WebCrypto/pure-JS — custom base64 wire encoding, MD5 request signatures,
-stable device fingerprints derived from uid, AES-128-CBC identity envelope
-(key doubles as IV), and RSA PKCS#1 v1.5 session-key wrapping implemented
-in raw BigInt modexp (WebCrypto omits PKCS#1 v1.5 encryption; verified
-byte-for-byte against Python's `cryptography`).
+Or use the deploy button above, then set the two secrets in the dashboard.
 
-## Option B — self-hosted (full engine)
+## Endpoints
 
-```bash
-git clone https://github.com/nullstacks/qoder2api
-cd qoder2api
-uv sync
-
-cp .env.example.qoder .env      # APP_SECRET + admin password to fill in
-uv run python scripts/create_user.py admin --role admin --password-stdin <<< "pw"
-
-uv run python -m uvicorn src.main:build_app --factory --host 127.0.0.1 --port 8000
-# login via dashboard → 凭证管理 → 登录渠道账号 → Qoder
+```
+GET  /v1/models            live model catalog (credit rate, context, flags)
+POST /v1/chat/completions  OpenAI wire (stream + non-stream, tools)
+GET  /health
 ```
 
-Full details in **[QODER-SETUP.md](QODER-SETUP.md)**.
+## Files
 
-## The two gotchas (intl channel)
+| File | What it is |
+|---|---|
+| `worker.js` | routes, OpenAI wire, SSE envelope decode, streaming |
+| `cosy.js` | the COSY protocol: custom base64 wire encoding, MD5 request signatures, device fingerprints, AES-128-CBC identity envelope, session material |
+| `rsa-pkcs1.js` | RSAES-PKCS#1-v1_5 in pure BigInt modexp (WebCrypto omits v1.5 encryption; the protocol requires it) — DER SPKI parser included |
+| `qoder_oauth.py` | standalone device-flow login → prints the credential JSON (`--test` verifies quota) |
 
-1. **Both env vars required** — `QODER_API_ENDPOINT=https://openapi.qoder.sh`
-   AND `QODER_GATEWAY_ENDPOINT=https://api1.qoder.sh`. The client *prepends*
-   its configured gateway host over the realm config; set only one and chat
-   calls hit the Chinese gateway, which rejects the intl token with a
-   misleading `403 code 105 "Login expired"`.
-2. **Restart before logging in** — realm is read at startup. Login-then-fix
-   auto-disables the credential as `session dead` (same misleading error).
-   Already stuck? Delete + re-login, or `POST /api/credentials/<id>/revive`.
+Protocol notes: session keys are wrapped with the server's RSA public key;
+identity JSON is AES-128-CBC encrypted with the session key doubling as the
+IV; every request is MD5-signed over `payload · cosy_key · date · body ·
+path`. Nothing is stored server-side — the Worker derives everything from
+your credential per request.
 
-The Worker doesn't have these problems: endpoints are hardcoded to the intl
-hosts, and the credential is used directly (no realm indirection).
+## Credential refresh
+
+Qoder credentials last ~30 days and the token refreshes on the server side
+during normal use — a Worker deployment just uses the access token until it
+expires. When chat starts returning auth errors, re-run `qoder_oauth.py`
+and update the `QODER_CREDENTIAL` secret.
+
+Self-hosting the full multi-channel engine (CodeBuddy, TRAE, CodeArts,
+check-ins, quota dashboards) instead? Use the upstream
+[RobbsLuo/Coding2API](https://github.com/RobbsLuo/Coding2API) — our
+[QODER-SETUP.md](QODER-SETUP.md) documents the intl-channel gotchas we hit
+(dual endpoint env vars, login-before-restart trap) which apply there too.
 
 ## License
 
-MIT — upstream © Hongsheng Luo (Robbs); COSY Worker port, auth script and
-setup docs © nullstacks. See LICENSE + NOTICE.
+MIT — COSY protocol reverse-engineering © Hongsheng Luo (Robbs); Worker
+port, auth script and docs © nullstacks. See LICENSE + NOTICE.

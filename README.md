@@ -5,9 +5,6 @@ Worker** — 3 files, zero dependencies, one device-flow login, no server.
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/nullstacks/qoder2api)
 
-**Live example:** `https://qoder2api.pushkarsingh4343.workers.dev/v1`
-(set your own `API_KEY` secret on deploy)
-
 A Worker implementation of the Qoder COSY protocol, based on the
 reverse-engineered client in
 [RobbsLuo/Coding2API](https://github.com/RobbsLuo/Coding2API) (MIT).

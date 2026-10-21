@@ -28,6 +28,15 @@ import urllib.parse
 import urllib.request
 import uuid
 
+# Windows consoles often default to a legacy code page (cp1252, gbk, ...) that
+# cannot encode this script's emoji/CJK output — it crashes before printing
+# anything. Reconfigure both streams to UTF-8 (unencodable chars -> "?").
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 OPENAPI = "https://openapi.qoder.sh"
 WEBSITE = "https://qoder.com"
 CLIENT_ID = "e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb"
@@ -139,7 +148,7 @@ def main():
     credential = {
         "access_token": token,
         "refresh_token": device.get("refresh_token", ""),
-        "uid": userinfo.get("userId") or token[:16],
+        "uid": userinfo.get("userId") or userinfo.get("id") or token[:16],
         "nickname": nickname,
         "realm": "intl",
         "domain": "qoder.com",
